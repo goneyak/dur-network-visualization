@@ -40,7 +40,7 @@ def bool_to_yes_no(x):
     return "Yes" if bool(x) else "No"
 
 
-def truncate_text(text, max_len=90):
+def truncate_text(text, max_len=100):
     text = clean_text(text)
     if len(text) <= max_len:
         return text
@@ -129,33 +129,81 @@ def node_passes_filters(
     return True
 
 
+def add_detail_line(lines, label, value, show_if_dash=False):
+    value = clean_text(value)
+    if value == "-" and not show_if_dash:
+        return
+    lines.append(f"<div style='margin-bottom:4px;'><b>{label}</b>: {value}</div>")
+
+
+def add_bool_line(lines, label, value):
+    if bool(value):
+        lines.append(f"<div style='margin-bottom:4px;'><b>{label}</b>: Yes</div>")
+
+
+def render_compact_detail_box(title, lines):
+    if not lines:
+        return
+    html = f"""
+    <div style="
+        border:1px solid #e5e7eb;
+        border-radius:10px;
+        padding:10px 12px;
+        background:#fafafa;
+        margin-bottom:10px;
+    ">
+        <div style="font-weight:600; margin-bottom:6px;">{title}</div>
+        <div style="font-size:13px; line-height:1.35;">
+            {''.join(lines)}
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def render_legend():
     st.markdown(
         """
         <div style="
-            padding: 12px 16px;
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            background-color: #fafafa;
-            margin-bottom: 12px;
-            font-size: 14px;
-            line-height: 1.7;
+            padding:10px 12px;
+            border:1px solid #e5e7eb;
+            border-radius:10px;
+            background:#fafafa;
+            font-size:13px;
+            line-height:1.6;
+            margin-bottom:10px;
         ">
-            <b>How to read the graph</b><br>
-            <b>Node size</b>: number of directly connected contraindicated drugs (degree)<br>
-            <b>Node colors</b>: 
-            <span style="color:red;"><b>●</b></span> Selected drug &nbsp;&nbsp;
-            <span style="color:orange;"><b>●</b></span> Pregnancy contraindication &nbsp;&nbsp;
-            <span style="color:purple;"><b>●</b></span> Elderly caution &nbsp;&nbsp;
-            <span style="color:green;"><b>●</b></span> Age-related contraindication &nbsp;&nbsp;
-            <span style="color:goldenrod;"><b>●</b></span> Group overlap &nbsp;&nbsp;
-            <span style="color:skyblue;"><b>●</b></span> General node
-            <br><br>
-            <b>Note</b>: if a drug belongs to multiple DUR categories, only one color is shown based on the current priority rule.
+            <b>Graph guide</b><br>
+            Size = direct contraindication connections (degree)<br>
+            Color =
+            <span style="color:red;"><b>●</b></span> Selected
+            <span style="color:orange;"><b>●</b></span> Pregnancy
+            <span style="color:purple;"><b>●</b></span> Elderly
+            <span style="color:green;"><b>●</b></span> Age-related
+            <span style="color:goldenrod;"><b>●</b></span> Group overlap
+            <span style="color:skyblue;"><b>●</b></span> General
         </div>
         """,
         unsafe_allow_html=True
     )
+
+
+def render_flag_badges(row):
+    badges = []
+    if row["is_preg_contra"]:
+        badges.append("Pregnancy")
+    if row["is_elderly_caution"]:
+        badges.append("Elderly")
+    if row["is_age_contra"]:
+        badges.append("Age")
+    if row["is_group_overlap"]:
+        badges.append("Group")
+    if row["is_dose_caution"]:
+        badges.append("Dose")
+    if row["is_duration_caution"]:
+        badges.append("Duration")
+
+    return ", ".join(badges) if badges else "None"
 
 
 # =========================================================
@@ -296,12 +344,10 @@ def build_node_table(edge_df):
 
 
 # =========================================================
-# Add overlays (BC, CC, FC, GC)
+# Add overlays
 # =========================================================
 def add_overlays(node_df, bc_df, cc_df, fc_df, gc_df, dc_df, ec_df):
-    # -------------------------
     # BC
-    # -------------------------
     bc_use = bc_df[["DUR성분코드", "연령기준", "금기내용"]].copy()
     bc_use = bc_use[bc_use["DUR성분코드"] != "-"].copy()
 
@@ -315,9 +361,7 @@ def add_overlays(node_df, bc_df, cc_df, fc_df, gc_df, dc_df, ec_df):
     )
     bc_summary["is_age_contra"] = True
 
-    # -------------------------
     # CC
-    # -------------------------
     cc_use = cc_df[["DUR성분코드", "등급", "금기내용"]].copy()
     cc_use = cc_use[cc_use["DUR성분코드"] != "-"].copy()
 
@@ -331,9 +375,7 @@ def add_overlays(node_df, bc_df, cc_df, fc_df, gc_df, dc_df, ec_df):
     )
     cc_summary["is_preg_contra"] = True
 
-    # -------------------------
     # FC
-    # -------------------------
     fc_use = fc_df[["DUR성분코드", "금기내용"]].copy()
     fc_use = fc_use[fc_use["DUR성분코드"] != "-"].copy()
 
@@ -346,9 +388,7 @@ def add_overlays(node_df, bc_df, cc_df, fc_df, gc_df, dc_df, ec_df):
     )
     fc_summary["is_elderly_caution"] = True
 
-    # -------------------------
     # GC
-    # -------------------------
     gc_cols = [c for c in ["DUR성분코드", "효능군", "계열명"] if c in gc_df.columns]
     gc_use = gc_df[gc_cols].copy()
     gc_use = gc_use[gc_use["DUR성분코드"] != "-"].copy()
@@ -371,54 +411,28 @@ def add_overlays(node_df, bc_df, cc_df, fc_df, gc_df, dc_df, ec_df):
     if "class_name" not in gc_summary.columns:
         gc_summary["class_name"] = "-"
 
-    # -------------------------
-    # DC (Dose caution)
-    # -------------------------
+    # DC
     dc_summary = build_rule_summary(
         dc_df,
         flag_name="is_dose_caution",
-        rule_col_candidates=[
-            "용량기준",
-            "최대용량",
-            "1일최대용량",
-            "용법용량",
-            "용량"
-        ],
-        reason_col_candidates=[
-            "금기내용",
-            "주의내용",
-            "상세내용"
-        ]
+        rule_col_candidates=["용량기준", "최대용량", "1일최대용량", "용법용량", "용량"],
+        reason_col_candidates=["금기내용", "주의내용", "상세내용"]
     ).rename(columns={
         "rule_text": "dose_rule",
         "reason_text": "dose_reason"
     })
 
-    # -------------------------
-    # EC (Duration caution)
-    # -------------------------
+    # EC
     ec_summary = build_rule_summary(
         ec_df,
         flag_name="is_duration_caution",
-        rule_col_candidates=[
-            "투여기간기준",
-            "기간기준",
-            "최대투여기간",
-            "투여기간"
-        ],
-        reason_col_candidates=[
-            "금기내용",
-            "주의내용",
-            "상세내용"
-        ]
+        rule_col_candidates=["투여기간기준", "기간기준", "최대투여기간", "투여기간"],
+        reason_col_candidates=["금기내용", "주의내용", "상세내용"]
     ).rename(columns={
         "rule_text": "duration_rule",
         "reason_text": "duration_reason"
     })
 
-    # -------------------------
-    # Merge all
-    # -------------------------
     node_overlay_df = node_df.copy()
 
     node_overlay_df = node_overlay_df.merge(
@@ -526,8 +540,22 @@ def build_graph(edge_df, node_overlay_df):
 
 
 # =========================================================
-# Plotly ego network
+# Plot functions
 # =========================================================
+def get_node_color(attr, is_selected=False):
+    if is_selected:
+        return "red"
+    if attr.get("is_preg_contra", False):
+        return "orange"
+    if attr.get("is_elderly_caution", False):
+        return "purple"
+    if attr.get("is_age_contra", False):
+        return "green"
+    if attr.get("is_group_overlap", False):
+        return "gold"
+    return "skyblue"
+
+
 def draw_ego_network_plotly_by_name(
     G,
     node_overlay_df,
@@ -573,7 +601,7 @@ def draw_ego_network_plotly_by_name(
         st.info("No neighbors match the current filter settings.")
         return None
 
-    pos = nx.spring_layout(ego_G, seed=42, k=0.8)
+    pos = nx.spring_layout(ego_G, seed=42, k=0.85)
 
     edge_x, edge_y = [], []
     edge_hover_x, edge_hover_y, edge_hover_text = [], [], []
@@ -602,7 +630,7 @@ def draw_ego_network_plotly_by_name(
     edge_trace = go.Scatter(
         x=edge_x,
         y=edge_y,
-        line=dict(width=1.5, color="gray"),
+        line=dict(width=1.4, color="gray"),
         hoverinfo="none",
         mode="lines",
         showlegend=False
@@ -628,40 +656,23 @@ def draw_ego_network_plotly_by_name(
 
         node_x.append(x)
         node_y.append(y)
-
-        if is_center:
-            color = "red"
-        elif attr.get("is_preg_contra", False):
-            color = "orange"
-        elif attr.get("is_elderly_caution", False):
-            color = "purple"
-        elif attr.get("is_age_contra", False):
-            color = "green"
-        elif attr.get("is_group_overlap", False):
-            color = "gold"
-        else:
-            color = "skyblue"
-
-        node_colors.append(color)
-        node_sizes.append(36 if is_center else 14 + attr.get("degree", 1) * 1.2)
+        node_colors.append(get_node_color(attr, is_selected=is_center))
+        node_sizes.append(42 if is_center else 12 + attr.get("degree", 1) * 1.0)
 
         label_eng = attr.get("label_eng", node)
         label_kor = attr.get("label_kor", "-")
-
         node_labels.append(label_eng if is_center else "")
 
         node_text.append(
             f"<b>{label_eng}</b><br>"
             f"Korean: {label_kor}<br>"
             f"Degree: {attr.get('degree', 0)}<br>"
-            f"Pregnancy Contraindication: {bool_to_yes_no(attr.get('is_preg_contra', False))}<br>"
-            f"Pregnancy Grade: {attr.get('preg_grade', '-')}<br>"
-            f"Elderly Caution: {bool_to_yes_no(attr.get('is_elderly_caution', False))}<br>"
-            f"Age Contraindication: {bool_to_yes_no(attr.get('is_age_contra', False))}<br>"
-            f"Age Rule: {attr.get('age_rule', '-')}<br>"
-            f"Group Overlap: {bool_to_yes_no(attr.get('is_group_overlap', False))}<br>"
-            f"Group Name: {attr.get('group_name', '-')}<br>"
-            f"Class Name: {attr.get('class_name', '-')}"
+            f"Pregnancy: {bool_to_yes_no(attr.get('is_preg_contra', False))}<br>"
+            f"Elderly: {bool_to_yes_no(attr.get('is_elderly_caution', False))}<br>"
+            f"Age-related: {bool_to_yes_no(attr.get('is_age_contra', False))}<br>"
+            f"Group overlap: {bool_to_yes_no(attr.get('is_group_overlap', False))}<br>"
+            f"Dose caution: {bool_to_yes_no(attr.get('is_dose_caution', False))}<br>"
+            f"Duration caution: {bool_to_yes_no(attr.get('is_duration_caution', False))}"
         )
 
     node_trace = go.Scatter(
@@ -683,23 +694,20 @@ def draw_ego_network_plotly_by_name(
     fig = go.Figure(data=[edge_trace, edge_hover_trace, node_trace])
 
     fig.update_layout(
-        title=f"Interactive Ego Network of {drug_name_eng}",
+        title=f"Ego Network: {drug_name_eng}",
         title_x=0.5,
         hovermode="closest",
-        margin=dict(l=20, r=20, t=50, b=20),
+        margin=dict(l=10, r=10, t=45, b=10),
         xaxis=dict(showgrid=False, zeroline=False, visible=False),
         yaxis=dict(showgrid=False, zeroline=False, visible=False),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        height=820
+        height=760
     )
 
     return fig
 
 
-# =========================================================
-# Global network view
-# =========================================================
 def draw_global_network_plotly(
     G,
     selected_drug_code=None,
@@ -734,7 +742,7 @@ def draw_global_network_plotly(
     edge_trace = go.Scatter(
         x=edge_x,
         y=edge_y,
-        line=dict(width=0.8, color="lightgray"),
+        line=dict(width=0.7, color="lightgray"),
         hoverinfo="none",
         mode="lines",
         showlegend=False
@@ -744,7 +752,7 @@ def draw_global_network_plotly(
         x=edge_hover_x,
         y=edge_hover_y,
         mode="markers",
-        marker=dict(size=8, color="rgba(0,0,0,0)"),
+        marker=dict(size=7, color="rgba(0,0,0,0)"),
         text=edge_hover_text,
         hoverinfo="text",
         showlegend=False
@@ -756,48 +764,30 @@ def draw_global_network_plotly(
     for node in G.nodes():
         x, y = pos[node]
         attr = G.nodes[node]
+        is_selected = (node == selected_drug_code)
 
         node_x.append(x)
         node_y.append(y)
-
-        is_selected = (node == selected_drug_code)
-
-        if is_selected:
-            color = "red"
-        elif attr.get("is_preg_contra", False):
-            color = "orange"
-        elif attr.get("is_elderly_caution", False):
-            color = "purple"
-        elif attr.get("is_age_contra", False):
-            color = "green"
-        elif attr.get("is_group_overlap", False):
-            color = "gold"
-        else:
-            color = "skyblue"
-
-        node_colors.append(color)
+        node_colors.append(get_node_color(attr, is_selected=is_selected))
 
         degree = attr.get("degree", 0)
-        size = 10 + degree * 1.1
+        size = 8 + degree * 1.0
         if is_selected:
-            size = max(size, 28)
+            size = max(size, 26)
         node_sizes.append(size)
 
         label_eng = attr.get("label_eng", node)
         label_kor = attr.get("label_kor", "-")
-
         node_labels.append(label_eng if show_labels else "")
 
         node_text.append(
             f"<b>{label_eng}</b><br>"
             f"Korean: {label_kor}<br>"
             f"Degree: {degree}<br>"
-            f"Pregnancy Contraindication: {bool_to_yes_no(attr.get('is_preg_contra', False))}<br>"
-            f"Elderly Caution: {bool_to_yes_no(attr.get('is_elderly_caution', False))}<br>"
-            f"Age Contraindication: {bool_to_yes_no(attr.get('is_age_contra', False))}<br>"
-            f"Group Overlap: {bool_to_yes_no(attr.get('is_group_overlap', False))}<br>"
-            f"Group Name: {attr.get('group_name', '-')}<br>"
-            f"Class Name: {attr.get('class_name', '-')}"
+            f"Pregnancy: {bool_to_yes_no(attr.get('is_preg_contra', False))}<br>"
+            f"Elderly: {bool_to_yes_no(attr.get('is_elderly_caution', False))}<br>"
+            f"Age-related: {bool_to_yes_no(attr.get('is_age_contra', False))}<br>"
+            f"Group overlap: {bool_to_yes_no(attr.get('is_group_overlap', False))}"
         )
 
     node_trace = go.Scatter(
@@ -811,7 +801,7 @@ def draw_global_network_plotly(
         marker=dict(
             size=node_sizes,
             color=node_colors,
-            line=dict(width=0.8, color="black")
+            line=dict(width=0.7, color="black")
         ),
         showlegend=False
     )
@@ -822,19 +812,19 @@ def draw_global_network_plotly(
         title="Global DUR Contraindication Network",
         title_x=0.5,
         hovermode="closest",
-        margin=dict(l=20, r=20, t=50, b=20),
+        margin=dict(l=10, r=10, t=45, b=10),
         xaxis=dict(showgrid=False, zeroline=False, visible=False),
         yaxis=dict(showgrid=False, zeroline=False, visible=False),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        height=900
+        height=860
     )
 
     return fig
 
 
 # =========================================================
-# Neighbor table
+# Tables
 # =========================================================
 def get_neighbor_table(
     G,
@@ -871,27 +861,19 @@ def get_neighbor_table(
             "Drug (EN)": attr.get("label_eng", neighbor),
             "Drug (KR)": attr.get("label_kor", "-"),
             "Degree": attr.get("degree", 0),
-            "Pregnancy Contra": bool_to_yes_no(attr.get("is_preg_contra", False)),
-            "Elderly Caution": bool_to_yes_no(attr.get("is_elderly_caution", False)),
-            "Age Contra": bool_to_yes_no(attr.get("is_age_contra", False)),
-            "Group Overlap": bool_to_yes_no(attr.get("is_group_overlap", False)),
-            "Contraindication Reason": truncate_text(edge_data.get("reason", "-"), 100),
+            "Pregnancy": bool_to_yes_no(attr.get("is_preg_contra", False)),
+            "Elderly": bool_to_yes_no(attr.get("is_elderly_caution", False)),
+            "Age-related": bool_to_yes_no(attr.get("is_age_contra", False)),
+            "Group overlap": bool_to_yes_no(attr.get("is_group_overlap", False)),
+            "Reason": truncate_text(edge_data.get("reason", "-"), 100),
             "Source Rows": edge_data.get("raw_count", "-"),
             "_full_reason": edge_data.get("reason", "-"),
         })
 
     if len(rows) == 0:
         return pd.DataFrame(columns=[
-            "Drug (EN)",
-            "Drug (KR)",
-            "Degree",
-            "Pregnancy Contra",
-            "Elderly Caution",
-            "Age Contra",
-            "Group Overlap",
-            "Contraindication Reason",
-            "Source Rows",
-            "_full_reason"
+            "Drug (EN)", "Drug (KR)", "Degree", "Pregnancy", "Elderly",
+            "Age-related", "Group overlap", "Reason", "Source Rows", "_full_reason"
         ])
 
     neighbor_df = pd.DataFrame(rows).sort_values(
@@ -899,29 +881,25 @@ def get_neighbor_table(
         ascending=[False, True]
     ).reset_index(drop=True)
 
-    neighbor_df = neighbor_df.head(top_n_neighbors)
-    return neighbor_df
+    return neighbor_df.head(top_n_neighbors)
 
 
-# =========================================================
-# Top hubs table
-# =========================================================
 def get_top_hubs(node_overlay_df, n=20):
     df = node_overlay_df.copy()
 
-    df["Pregnancy Contra"] = df["is_preg_contra"].apply(bool_to_yes_no)
-    df["Elderly Caution"] = df["is_elderly_caution"].apply(bool_to_yes_no)
-    df["Age Contra"] = df["is_age_contra"].apply(bool_to_yes_no)
-    df["Group Overlap"] = df["is_group_overlap"].apply(bool_to_yes_no)
+    df["Pregnancy"] = df["is_preg_contra"].apply(bool_to_yes_no)
+    df["Elderly"] = df["is_elderly_caution"].apply(bool_to_yes_no)
+    df["Age-related"] = df["is_age_contra"].apply(bool_to_yes_no)
+    df["Group overlap"] = df["is_group_overlap"].apply(bool_to_yes_no)
 
     return df[[
         "label_eng",
         "label_kor",
         "degree",
-        "Pregnancy Contra",
-        "Elderly Caution",
-        "Age Contra",
-        "Group Overlap"
+        "Pregnancy",
+        "Elderly",
+        "Age-related",
+        "Group overlap"
     ]].rename(columns={
         "label_eng": "Drug (EN)",
         "label_kor": "Drug (KR)",
@@ -947,13 +925,7 @@ def load_pipeline():
     edge_df = build_edge_table(ac_df)
     node_df = build_node_table(edge_df)
     node_overlay_df = add_overlays(
-        node_df,
-        bc_df,
-        cc_df,
-        fc_df,
-        gc_df,
-        dc_df,
-        ec_df
+        node_df, bc_df, cc_df, fc_df, gc_df, dc_df, ec_df
     )
 
     return edge_df, node_overlay_df
@@ -973,28 +945,29 @@ st.caption("Interactive explorer for public DUR contraindication rules")
 edge_df, node_overlay_df = load_pipeline()
 G = get_graph(edge_df, node_overlay_df)
 
-st.sidebar.markdown("### Filters")
-
-preg_only = st.sidebar.checkbox("Pregnancy contraindication only", value=False)
-elderly_only = st.sidebar.checkbox("Elderly caution only", value=False)
-age_only = st.sidebar.checkbox("Age contraindication only", value=False)
-group_only = st.sidebar.checkbox("Group overlap only", value=False)
-
-top_n_neighbors = st.sidebar.slider(
-    "Show top N neighbors",
-    min_value=5,
-    max_value=50,
-    value=20,
-    step=5
-)
-
+# Sidebar
+st.sidebar.header("Explore")
 drug_options = sorted(node_overlay_df["label_eng"].dropna().unique().tolist())
 default_drug = "Rifampicin" if "Rifampicin" in drug_options else drug_options[0]
 
 selected_drug = st.sidebar.selectbox(
-    "Select a drug",
+    "Drug",
     drug_options,
     index=drug_options.index(default_drug)
+)
+
+st.sidebar.markdown("### Filters")
+preg_only = st.sidebar.checkbox("Pregnancy only", value=False)
+elderly_only = st.sidebar.checkbox("Elderly only", value=False)
+age_only = st.sidebar.checkbox("Age-related only", value=False)
+group_only = st.sidebar.checkbox("Group overlap only", value=False)
+
+top_n_neighbors = st.sidebar.slider(
+    "Visible neighbors",
+    min_value=5,
+    max_value=50,
+    value=20,
+    step=5
 )
 
 selected_row = node_overlay_df[node_overlay_df["label_eng"] == selected_drug].iloc[0]
@@ -1011,59 +984,64 @@ neighbor_df = get_neighbor_table(
     top_n_neighbors=top_n_neighbors
 )
 
-tab1, tab2 = st.tabs(["Ego Network Explorer", "Global Network Overview"])
+tabs = st.tabs(["Ego Network", "Global Network"])
+tab1, tab2 = tabs
 
 with tab1:
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Drug", selected_drug)
     c2.metric("Degree", int(selected_row["degree"]))
-    c3.metric("Shown Neighbors", len(neighbor_df))
-    c4.metric("Pregnancy Contra", bool_to_yes_no(selected_row["is_preg_contra"]))
-    c5.metric("Elderly Caution", bool_to_yes_no(selected_row["is_elderly_caution"]))
-    c6.metric("Group Overlap", bool_to_yes_no(selected_row["is_group_overlap"]))
+    c3.metric("Visible neighbors", len(neighbor_df))
+    c4.metric("Flags", render_flag_badges(selected_row))
 
-    render_legend()
+    graph_col, detail_col = st.columns([2.2, 1])
 
-    st.markdown("### Selected Drug Detail")
+    with graph_col:
+        render_legend()
 
-    d1, d2 = st.columns(2)
+        fig = draw_ego_network_plotly_by_name(
+            G,
+            node_overlay_df,
+            selected_drug,
+            preg_only=preg_only,
+            elderly_only=elderly_only,
+            age_only=age_only,
+            group_only=group_only,
+            top_n_neighbors=top_n_neighbors
+        )
 
-    with d1:
-        st.markdown("**Vulnerable Population / DUR Info**")
-        st.write(f"- Pregnancy contraindication: {bool_to_yes_no(selected_row['is_preg_contra'])}")
-        st.write(f"- Pregnancy grade: {selected_row['preg_grade']}")
-        st.write(f"- Elderly caution: {bool_to_yes_no(selected_row['is_elderly_caution'])}")
-        st.write(f"- Age-related contraindication: {bool_to_yes_no(selected_row['is_age_contra'])}")
-        st.write(f"- Age rule: {selected_row['age_rule']}")
-        st.write(f"- Group overlap: {bool_to_yes_no(selected_row['is_group_overlap'])}")
-        st.write(f"- Group name: {selected_row['group_name']}")
-        st.write(f"- Class name: {selected_row['class_name']}")
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True)
 
-    with d2:
-        st.markdown("**Dose / Duration Detail**")
-        st.write(f"- Dose caution: {bool_to_yes_no(selected_row['is_dose_caution'])}")
-        st.write(f"- Dose rule: {selected_row['dose_rule']}")
-        st.write(f"- Dose reason: {selected_row['dose_reason']}")
-        st.write(f"- Duration caution: {bool_to_yes_no(selected_row['is_duration_caution'])}")
-        st.write(f"- Duration rule: {selected_row['duration_rule']}")
-        st.write(f"- Duration reason: {selected_row['duration_reason']}")
+    with detail_col:
+        st.markdown("### Drug Detail")
 
-    fig = draw_ego_network_plotly_by_name(
-        G,
-        node_overlay_df,
-        selected_drug,
-        preg_only=preg_only,
-        elderly_only=elderly_only,
-        age_only=age_only,
-        group_only=group_only,
-        top_n_neighbors=top_n_neighbors
-    )
+        core_lines = []
+        add_bool_line(core_lines, "Pregnancy", selected_row["is_preg_contra"])
+        add_detail_line(core_lines, "Pregnancy grade", selected_row["preg_grade"])
+        add_bool_line(core_lines, "Elderly", selected_row["is_elderly_caution"])
+        add_bool_line(core_lines, "Age-related", selected_row["is_age_contra"])
+        add_detail_line(core_lines, "Age rule", selected_row["age_rule"])
+        add_bool_line(core_lines, "Group overlap", selected_row["is_group_overlap"])
+        add_detail_line(core_lines, "Group name", selected_row["group_name"])
+        add_detail_line(core_lines, "Class name", selected_row["class_name"])
 
-    if fig is not None:
-        st.plotly_chart(fig, use_container_width=True)
+        if not core_lines:
+            core_lines.append("<div style='margin-bottom:4px;'>No flagged DUR metadata available.</div>")
 
-    st.subheader("Directly connected contraindicated drugs")
+        render_compact_detail_box("Core DUR info", core_lines)
 
+        additional_lines = []
+        add_bool_line(additional_lines, "Dose caution", selected_row["is_dose_caution"])
+        add_detail_line(additional_lines, "Dose rule", selected_row["dose_rule"])
+        add_detail_line(additional_lines, "Dose reason", selected_row["dose_reason"])
+        add_bool_line(additional_lines, "Duration caution", selected_row["is_duration_caution"])
+        add_detail_line(additional_lines, "Duration rule", selected_row["duration_rule"])
+        add_detail_line(additional_lines, "Duration reason", selected_row["duration_reason"])
+
+        render_compact_detail_box("Additional rules", additional_lines)
+
+    st.markdown("### Connected Drugs")
     if len(neighbor_df) == 0:
         st.info("No directly connected drugs match the current filter settings.")
     else:
@@ -1077,15 +1055,15 @@ with tab1:
             st.dataframe(full_reason_df, use_container_width=True, hide_index=True)
 
 with tab2:
-    st.markdown("### Global Network Overview")
-    st.caption(
-        "This view shows the full ingredient-level contraindication network. "
-        "Use zoom and hover to inspect how drugs are connected."
-    )
+    top_left, top_right = st.columns([3, 1])
+
+    with top_left:
+        st.markdown("### Global Network Overview")
+        st.caption("Zoom and hover to inspect how drugs are connected across the full network.")
+    with top_right:
+        show_global_labels = st.checkbox("Show all labels", value=False)
 
     render_legend()
-
-    show_global_labels = st.checkbox("Show labels for all nodes", value=False)
 
     global_fig = draw_global_network_plotly(
         G,
@@ -1094,5 +1072,5 @@ with tab2:
     )
     st.plotly_chart(global_fig, use_container_width=True)
 
-    st.markdown("### Top hub ingredients in the full network")
+    st.markdown("### Top Hub Ingredients")
     st.dataframe(get_top_hubs(node_overlay_df, n=20), use_container_width=True, hide_index=True)
