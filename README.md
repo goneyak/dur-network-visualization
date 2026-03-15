@@ -36,11 +36,23 @@ This project addresses that by constructing:
 
 - interactive drug selection
 - ego-network visualization centered on a selected ingredient
-- node coloring by vulnerable-population overlay
-- node sizing by degree
+- full-network overview tab
+- node coloring by DUR overlay category
+- node sizing by network degree
+- graph legend explaining node size and node color semantics
+- selected drug detail panel including:
+  - pregnancy / elderly / age / therapeutic-group overlays
+  - dose caution
+  - duration caution
 - directly connected contraindicated drug table
 - contraindication reason preview with expandable detailed view
 - top hub summary table
+- sidebar filters for:
+  - pregnancy contraindication
+  - elderly caution
+  - age-related contraindication
+  - therapeutic group overlap
+  - top N neighbors
 
 ## Screenshots
 
@@ -55,12 +67,15 @@ This project addresses that by constructing:
 
 ## Data Sources
 
-The current MVP uses the following public Korean DUR ingredient-level datasets:
+The current version uses the following public Korean DUR ingredient-level datasets:
 
 - `OpenData_PotOpenDurIngr_AC20260312.csv` — contraindicated combinations
 - `OpenData_PotOpenDurIngr_BC20260312.csv` — age-related contraindications
 - `OpenData_PotOpenDurIngr_CC20260312.csv` — pregnancy contraindications
 - `OpenData_PotOpenDurIngr_FC20260312.csv` — elderly cautions
+- `OpenData_PotOpenDurIngr_GC20260312.csv` — therapeutic group overlap
+- `OpenData_PotOpenDurIngr_DC20260312.csv` — dose caution
+- `OpenData_PotOpenDurIngr_EC20260312.csv` — duration caution
 
 ## Method
 
@@ -90,8 +105,11 @@ Additional DUR datasets are merged into the node table:
 - BC → age-related contraindication
 - CC → pregnancy contraindication
 - FC → elderly caution
+- GC → therapeutic group overlap
+- DC → dose caution
+- EC → duration caution
 
-These overlays enrich interpretation of nodes in the ego-network view.
+These overlays enrich interpretation of nodes and selected-drug detail panels.
 
 ### 4. Graph representation
 A NetworkX graph is built from the edge and node tables.
@@ -172,11 +190,11 @@ Then open the local Streamlit URL shown in the terminal.
 
 ## Future Work
 
-- add GC overlay (therapeutic duplication)
-- add filtering options for pregnancy / elderly / age-related flags
-- improve text readability of contraindication reasons
-- support full-network or multi-hop exploration
-- deploy the prototype for online access
+- add IC and other remaining DUR categories
+- improve formatting of long contraindication reasons
+- add CSV download for filtered neighbor tables
+- add keyword filtering for contraindication reasons
+- deploy the app online
 
 ## Author Notes
 
