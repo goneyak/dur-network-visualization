@@ -39,7 +39,10 @@ This project addresses that by constructing:
 - full-network overview tab
 - node coloring by DUR overlay category
 - node sizing by network degree
-- graph legend explaining node size and node color semantics
+- node border thickness by DUR risk flag count (1 flag → gray, 2 → orange, 3+ → crimson)
+- edge thickness by source data row count (thicker = more documented relationship)
+- global network min-degree slider to reduce clutter
+- graph legend explaining node size, color, border, and edge thickness semantics
 - selected drug detail panel including:
   - pregnancy / elderly / age / therapeutic-group overlays
   - dose caution
@@ -86,7 +89,10 @@ The raw AC contraindication dataset is transformed into a canonical pair-based e
 - display labels use English ingredient names, with Korean fallback when needed
 - A-B and B-A are treated as the same undirected edge
 - repeated raw rows are aggregated at the canonical pair level
-- contraindication reasons are combined into a single edge attribute
+- contraindication reasons are handled in three levels:
+  - `reason_raw`: untouched source text
+  - `reason_clean`: deterministic normalized text
+  - `reason_short`: UI-friendly short text (optional LLM summarization, safe fallback)
 - raw row count is preserved as metadata
 
 ### 2. Node construction
@@ -124,7 +130,7 @@ A Streamlit prototype provides:
 - summary cards
 - interactive Plotly ego-network
 - directly connected contraindicated drug table
-- expandable tables for full reasons and top hubs
+- expandable tables for cleaned reasons, optional raw reasons, and top hubs
 
 ## Example Interpretation
 
@@ -139,7 +145,7 @@ Rather, it indicates that under the current public DUR rules, it has many direct
 - Degree reflects network connectivity, not absolute clinical risk.
 - The current prototype focuses on ego-network visualization rather than full-network exploration.
 - Some contraindication reasons are long and still need better formatting.
-- Not all DUR categories are integrated yet (for example, GC / DC / EC are not included in the current MVP).
+- IC (상호작용 금기) category is not yet integrated.
 
 ## Project Structure
 
@@ -151,7 +157,11 @@ dur-network-visualization/
 │   │   ├── OpenData_PotOpenDurIngr_AC20260312.csv
 │   │   ├── OpenData_PotOpenDurIngr_BC20260312.csv
 │   │   ├── OpenData_PotOpenDurIngr_CC20260312.csv
-│   │   └── OpenData_PotOpenDurIngr_FC20260312.csv
+│   │   ├── OpenData_PotOpenDurIngr_DC20260312.csv
+│   │   ├── OpenData_PotOpenDurIngr_EC20260312.csv
+│   │   ├── OpenData_PotOpenDurIngr_FC20260312.csv
+│   │   ├── OpenData_PotOpenDurIngr_GC20260312.csv
+│   │   └── OpenData_PotOpenDurIngr_IC20260312.csv
 │   └── processed/
 ├── notebooks/
 ├── docs/

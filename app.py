@@ -3,6 +3,8 @@ from pathlib import Path
 import networkx as nx
 import plotly.graph_objects as go
 import streamlit as st
+import os
+import re
 
 
 # =========================================================
@@ -45,6 +47,93 @@ def truncate_text(text, max_len=100):
     if len(text) <= max_len:
         return text
     return text[:max_len] + "..."
+
+
+def unique_join_raw(series):
+    values = []
+    for v in series:
+        if pd.isna(v):
+            continue
+        raw = str(v)
+        if not raw.strip():
+            continue
+        if raw not in values:
+            values.append(raw)
+    return " / ".join(values) if values else "-"
+
+
+def clean_reason_text(text):
+    if pd.isna(text):
+        return "-"
+
+    s = str(text)
+    s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+
+    # Split by common separators, trim leading list marks, and re-join deterministically.
+    parts = re.split(r"\s*(?:\||/|;|,|ㆍ|·)\s*", s)
+    normalized = []
+    for part in parts:
+        part = re.sub(r"^[\s\-_•·]+", "", part)
+        part = re.sub(r"\s+", " ", part).strip()
+        if part and part != "-" and part not in normalized:
+            normalized.append(part)
+
+    return " / ".join(normalized) if normalized else "-"
+
+
+def shorten_reason_deterministic(text, max_len=100):
+    text = clean_text(text)
+    if text == "-":
+        return "-"
+    if len(text) <= max_len:
+        return text
+    return text[:max_len].rstrip() + "..."
+
+
+@st.cache_data(show_spinner=False)
+def summarize_reason_with_llm(reason_clean, max_len=100):
+    fallback = shorten_reason_deterministic(reason_clean, max_len=max_len)
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        try:
+            api_key = st.secrets.get("OPENAI_API_KEY")
+        except Exception:
+            api_key = None
+
+    if not api_key:
+        return fallback
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        response = client.responses.create(
+            model=model,
+            input=[
+                {
+                    "role": "system",
+                    "content": "Summarize medical contraindication text into one concise sentence. Keep factual meaning.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Text: {reason_clean}\nMax chars: {max_len}",
+                },
+            ],
+            max_output_tokens=120,
+        )
+
+        out = clean_text(getattr(response, "output_text", ""))
+        return shorten_reason_deterministic(out, max_len=max_len)
+    except Exception:
+        return fallback
+
+
+def get_reason_short(reason_clean, use_llm=False, max_len=100):
+    if use_llm:
+        return summarize_reason_with_llm(reason_clean, max_len=max_len)
+    return shorten_reason_deterministic(reason_clean, max_len=max_len)
 
 
 def load_dur_csv(file_path):
@@ -170,18 +259,23 @@ def render_legend():
             border-radius:10px;
             background:#fafafa;
             font-size:13px;
-            line-height:1.6;
+            line-height:1.7;
             margin-bottom:10px;
         ">
             <b>Graph guide</b><br>
-            Size = direct contraindication connections (degree)<br>
-            Color =
+            <b>Node size</b> = degree (direct contraindication connections)<br>
+            <b>Node color</b> =
             <span style="color:red;"><b>●</b></span> Selected
             <span style="color:orange;"><b>●</b></span> Pregnancy
             <span style="color:purple;"><b>●</b></span> Elderly
             <span style="color:green;"><b>●</b></span> Age-related
             <span style="color:goldenrod;"><b>●</b></span> Group overlap
-            <span style="color:skyblue;"><b>●</b></span> General
+            <span style="color:skyblue;"><b>●</b></span> General<br>
+            <b>Node border</b> = DUR risk flag count &nbsp;
+            <span style="color:darkgray;">— 1 flag</span> &nbsp;
+            <span style="color:darkorange;">— 2 flags</span> &nbsp;
+            <span style="color:crimson;">— 3+ flags</span><br>
+            <b>Edge thickness</b> = source data rows (thicker = more documented relationship)
         </div>
         """,
         unsafe_allow_html=True
@@ -263,8 +357,19 @@ def build_edge_table(ac_df):
     ]
     df = df[cols].copy()
 
-    for col in cols:
+    # Keep raw reason untouched; clean only the fields needed for canonical edge building.
+    for col in [
+        "DUR성분코드",
+        "DUR성분명영문",
+        "DUR성분명",
+        "병용금기DUR성분코드",
+        "병용금기DUR성분영문명",
+        "병용금기DUR성분명",
+    ]:
         df[col] = df[col].apply(clean_text)
+
+    df["reason_raw_item"] = df["금기내용"]
+    df["reason_clean_item"] = df["금기내용"].apply(clean_reason_text)
 
     df = df[
         (df["DUR성분코드"] != "-") &
@@ -288,7 +393,8 @@ def build_edge_table(ac_df):
             as_index=False
         )
         .agg(
-            reason=("금기내용", unique_join),
+            reason_raw=("reason_raw_item", unique_join_raw),
+            reason_clean=("reason_clean_item", unique_join_raw),
             raw_count=("금기내용", "size")
         )
         .sort_values(
@@ -297,6 +403,12 @@ def build_edge_table(ac_df):
         )
         .reset_index(drop=True)
     )
+
+    edge_df["reason_short"] = edge_df["reason_clean"].apply(
+        lambda x: shorten_reason_deterministic(x, max_len=100)
+    )
+    # Backward-compatible alias for existing hover logic.
+    edge_df["reason"] = edge_df["reason_clean"]
 
     return edge_df
 
@@ -533,6 +645,9 @@ def build_graph(edge_df, node_overlay_df):
             row["source_code"],
             row["target_code"],
             reason=row["reason"],
+            reason_raw=row["reason_raw"],
+            reason_clean=row["reason_clean"],
+            reason_short=row["reason_short"],
             raw_count=row["raw_count"]
         )
 
@@ -554,6 +669,14 @@ def get_node_color(attr, is_selected=False):
     if attr.get("is_group_overlap", False):
         return "gold"
     return "skyblue"
+
+
+def count_flags(attr):
+    flag_keys = [
+        "is_preg_contra", "is_elderly_caution", "is_age_contra",
+        "is_group_overlap", "is_dose_caution", "is_duration_caution"
+    ]
+    return sum(1 for k in flag_keys if attr.get(k, False))
 
 
 def draw_ego_network_plotly_by_name(
@@ -603,15 +726,25 @@ def draw_ego_network_plotly_by_name(
 
     pos = nx.spring_layout(ego_G, seed=42, k=0.85)
 
-    edge_x, edge_y = [], []
+    _edge_buckets = [
+        {"x": [], "y": [], "width": 1.2, "color": "rgba(200,200,200,0.7)"},
+        {"x": [], "y": [], "width": 2.4, "color": "rgba(130,130,130,0.8)"},
+        {"x": [], "y": [], "width": 4.0, "color": "rgba(50,50,50,0.9)"},
+    ]
     edge_hover_x, edge_hover_y, edge_hover_text = [], [], []
 
     for u, v, data in ego_G.edges(data=True):
         x0, y0 = pos[u]
         x1, y1 = pos[v]
-
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
+        rc = data.get("raw_count", 1)
+        if rc >= 5:
+            bkt = _edge_buckets[2]
+        elif rc >= 2:
+            bkt = _edge_buckets[1]
+        else:
+            bkt = _edge_buckets[0]
+        bkt["x"].extend([x0, x1, None])
+        bkt["y"].extend([y0, y1, None])
 
         mx = (x0 + x1) / 2
         my = (y0 + y1) / 2
@@ -627,14 +760,16 @@ def draw_ego_network_plotly_by_name(
             f"Source Rows: {data.get('raw_count', '-')}"
         )
 
-    edge_trace = go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        line=dict(width=1.4, color="gray"),
-        hoverinfo="none",
-        mode="lines",
-        showlegend=False
-    )
+    edge_traces = [
+        go.Scatter(
+            x=b["x"], y=b["y"],
+            line=dict(width=b["width"], color=b["color"]),
+            hoverinfo="none",
+            mode="lines",
+            showlegend=False
+        )
+        for b in _edge_buckets if b["x"]
+    ]
 
     edge_hover_trace = go.Scatter(
         x=edge_hover_x,
@@ -648,6 +783,7 @@ def draw_ego_network_plotly_by_name(
 
     node_x, node_y = [], []
     node_text, node_sizes, node_colors, node_labels = [], [], [], []
+    node_border_widths, node_border_colors = [], []
 
     for node in ego_G.nodes():
         x, y = pos[node]
@@ -658,6 +794,20 @@ def draw_ego_network_plotly_by_name(
         node_y.append(y)
         node_colors.append(get_node_color(attr, is_selected=is_center))
         node_sizes.append(42 if is_center else 12 + attr.get("degree", 1) * 1.0)
+
+        n_flags = count_flags(attr)
+        if is_center:
+            node_border_widths.append(2.5)
+            node_border_colors.append("black")
+        elif n_flags >= 3:
+            node_border_widths.append(3.0)
+            node_border_colors.append("crimson")
+        elif n_flags >= 2:
+            node_border_widths.append(2.0)
+            node_border_colors.append("darkorange")
+        else:
+            node_border_widths.append(1.0)
+            node_border_colors.append("darkgray")
 
         label_eng = attr.get("label_eng", node)
         label_kor = attr.get("label_kor", "-")
@@ -686,12 +836,12 @@ def draw_ego_network_plotly_by_name(
         marker=dict(
             size=node_sizes,
             color=node_colors,
-            line=dict(width=1, color="black")
+            line=dict(width=node_border_widths, color=node_border_colors)
         ),
         showlegend=False
     )
 
-    fig = go.Figure(data=[edge_trace, edge_hover_trace, node_trace])
+    fig = go.Figure(data=[*edge_traces, edge_hover_trace, node_trace])
 
     fig.update_layout(
         title=f"Ego Network: {drug_name_eng}",
@@ -711,19 +861,35 @@ def draw_ego_network_plotly_by_name(
 def draw_global_network_plotly(
     G,
     selected_drug_code=None,
-    show_labels=False
+    show_labels=False,
+    min_degree=1
 ):
-    pos = nx.spring_layout(G, seed=42, k=0.35)
+    nodes_to_show = [
+        n for n in G.nodes()
+        if G.nodes[n].get("degree", 0) >= min_degree or n == selected_drug_code
+    ]
+    plot_G = G.subgraph(nodes_to_show)
+    pos = nx.spring_layout(plot_G, seed=42, k=0.35)
 
-    edge_x, edge_y = [], []
+    _edge_buckets = [
+        {"x": [], "y": [], "width": 0.8, "color": "rgba(210,210,210,0.6)"},
+        {"x": [], "y": [], "width": 1.8, "color": "rgba(150,150,150,0.75)"},
+        {"x": [], "y": [], "width": 3.2, "color": "rgba(70,70,70,0.9)"},
+    ]
     edge_hover_x, edge_hover_y, edge_hover_text = [], [], []
 
-    for u, v, data in G.edges(data=True):
+    for u, v, data in plot_G.edges(data=True):
         x0, y0 = pos[u]
         x1, y1 = pos[v]
-
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
+        rc = data.get("raw_count", 1)
+        if rc >= 5:
+            bkt = _edge_buckets[2]
+        elif rc >= 2:
+            bkt = _edge_buckets[1]
+        else:
+            bkt = _edge_buckets[0]
+        bkt["x"].extend([x0, x1, None])
+        bkt["y"].extend([y0, y1, None])
 
         mx = (x0 + x1) / 2
         my = (y0 + y1) / 2
@@ -739,14 +905,16 @@ def draw_global_network_plotly(
             f"Source Rows: {data.get('raw_count', '-')}"
         )
 
-    edge_trace = go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        line=dict(width=0.7, color="lightgray"),
-        hoverinfo="none",
-        mode="lines",
-        showlegend=False
-    )
+    edge_traces = [
+        go.Scatter(
+            x=b["x"], y=b["y"],
+            line=dict(width=b["width"], color=b["color"]),
+            hoverinfo="none",
+            mode="lines",
+            showlegend=False
+        )
+        for b in _edge_buckets if b["x"]
+    ]
 
     edge_hover_trace = go.Scatter(
         x=edge_hover_x,
@@ -760,8 +928,9 @@ def draw_global_network_plotly(
 
     node_x, node_y = [], []
     node_text, node_sizes, node_colors, node_labels = [], [], [], []
+    node_border_widths, node_border_colors = [], []
 
-    for node in G.nodes():
+    for node in plot_G.nodes():
         x, y = pos[node]
         attr = G.nodes[node]
         is_selected = (node == selected_drug_code)
@@ -775,6 +944,20 @@ def draw_global_network_plotly(
         if is_selected:
             size = max(size, 26)
         node_sizes.append(size)
+
+        n_flags = count_flags(attr)
+        if is_selected:
+            node_border_widths.append(2.5)
+            node_border_colors.append("black")
+        elif n_flags >= 3:
+            node_border_widths.append(2.5)
+            node_border_colors.append("crimson")
+        elif n_flags >= 2:
+            node_border_widths.append(1.8)
+            node_border_colors.append("darkorange")
+        else:
+            node_border_widths.append(0.7)
+            node_border_colors.append("darkgray")
 
         label_eng = attr.get("label_eng", node)
         label_kor = attr.get("label_kor", "-")
@@ -801,15 +984,15 @@ def draw_global_network_plotly(
         marker=dict(
             size=node_sizes,
             color=node_colors,
-            line=dict(width=0.7, color="black")
+            line=dict(width=node_border_widths, color=node_border_colors)
         ),
         showlegend=False
     )
 
-    fig = go.Figure(data=[edge_trace, edge_hover_trace, node_trace])
+    fig = go.Figure(data=[*edge_traces, edge_hover_trace, node_trace])
 
     fig.update_layout(
-        title="Global DUR Contraindication Network",
+        title=f"Global DUR Contraindication Network ({plot_G.number_of_nodes()} drugs, {plot_G.number_of_edges()} connections)",
         title_x=0.5,
         hovermode="closest",
         margin=dict(l=10, r=10, t=45, b=10),
@@ -834,7 +1017,8 @@ def get_neighbor_table(
     elderly_only=False,
     age_only=False,
     group_only=False,
-    top_n_neighbors=20
+    top_n_neighbors=20,
+    use_llm_reason_short=False
 ):
     sub = node_overlay_df[node_overlay_df["label_eng"] == drug_name_eng].copy()
     if len(sub) == 0:
@@ -856,6 +1040,13 @@ def get_neighbor_table(
             continue
 
         edge_data = G.get_edge_data(center_code, neighbor)
+        reason_raw = edge_data.get("reason_raw", "-")
+        reason_clean = edge_data.get("reason_clean", clean_reason_text(reason_raw))
+        reason_short = get_reason_short(
+            reason_clean,
+            use_llm=use_llm_reason_short,
+            max_len=100,
+        )
 
         rows.append({
             "Drug (EN)": attr.get("label_eng", neighbor),
@@ -865,15 +1056,16 @@ def get_neighbor_table(
             "Elderly": bool_to_yes_no(attr.get("is_elderly_caution", False)),
             "Age-related": bool_to_yes_no(attr.get("is_age_contra", False)),
             "Group overlap": bool_to_yes_no(attr.get("is_group_overlap", False)),
-            "Reason": truncate_text(edge_data.get("reason", "-"), 100),
+            "Reason": reason_short,
             "Source Rows": edge_data.get("raw_count", "-"),
-            "_full_reason": edge_data.get("reason", "-"),
+            "_reason_clean": reason_clean,
+            "_reason_raw": reason_raw,
         })
 
     if len(rows) == 0:
         return pd.DataFrame(columns=[
             "Drug (EN)", "Drug (KR)", "Degree", "Pregnancy", "Elderly",
-            "Age-related", "Group overlap", "Reason", "Source Rows", "_full_reason"
+            "Age-related", "Group overlap", "Reason", "Source Rows", "_reason_clean", "_reason_raw"
         ])
 
     neighbor_df = pd.DataFrame(rows).sort_values(
@@ -970,6 +1162,12 @@ top_n_neighbors = st.sidebar.slider(
     step=5
 )
 
+use_llm_reason_short = st.sidebar.checkbox(
+    "Use LLM for short reasons (optional)",
+    value=False,
+    help="If an API key/backend is available, short reasons can use LLM summarization. Otherwise safe deterministic fallback is used.",
+)
+
 selected_row = node_overlay_df[node_overlay_df["label_eng"] == selected_drug].iloc[0]
 selected_drug_code = selected_row["code"]
 
@@ -981,7 +1179,8 @@ neighbor_df = get_neighbor_table(
     elderly_only=elderly_only,
     age_only=age_only,
     group_only=group_only,
-    top_n_neighbors=top_n_neighbors
+    top_n_neighbors=top_n_neighbors,
+    use_llm_reason_short=use_llm_reason_short,
 )
 
 tabs = st.tabs(["Ego Network", "Global Network"])
@@ -1045,14 +1244,20 @@ with tab1:
     if len(neighbor_df) == 0:
         st.info("No directly connected drugs match the current filter settings.")
     else:
-        display_neighbor_df = neighbor_df.drop(columns=["_full_reason"]).copy()
+        display_neighbor_df = neighbor_df.drop(columns=["_reason_clean", "_reason_raw"]).copy()
         st.dataframe(display_neighbor_df, use_container_width=True, hide_index=True)
 
-        with st.expander("Show full contraindication reasons"):
-            full_reason_df = neighbor_df[["Drug (EN)", "Drug (KR)", "_full_reason"]].rename(
-                columns={"_full_reason": "Full Reason"}
+        with st.expander("Show cleaned contraindication reasons"):
+            clean_reason_df = neighbor_df[["Drug (EN)", "Drug (KR)", "_reason_clean"]].rename(
+                columns={"_reason_clean": "Reason (Clean)"}
             )
-            st.dataframe(full_reason_df, use_container_width=True, hide_index=True)
+            st.dataframe(clean_reason_df, use_container_width=True, hide_index=True)
+
+        with st.expander("Show raw contraindication reasons (optional)"):
+            raw_reason_df = neighbor_df[["Drug (EN)", "Drug (KR)", "_reason_raw"]].rename(
+                columns={"_reason_raw": "Reason (Raw)"}
+            )
+            st.dataframe(raw_reason_df, use_container_width=True, hide_index=True)
 
 with tab2:
     top_left, top_right = st.columns([3, 1])
@@ -1063,12 +1268,22 @@ with tab2:
     with top_right:
         show_global_labels = st.checkbox("Show all labels", value=False)
 
+    min_degree_global = st.slider(
+        "Min degree (hide low-connectivity nodes)",
+        min_value=1,
+        max_value=20,
+        value=3,
+        step=1,
+        help="Only show drugs with at least this many direct contraindication connections. Lower values show more nodes but increase clutter."
+    )
+
     render_legend()
 
     global_fig = draw_global_network_plotly(
         G,
         selected_drug_code=selected_drug_code,
-        show_labels=show_global_labels
+        show_labels=show_global_labels,
+        min_degree=min_degree_global
     )
     st.plotly_chart(global_fig, use_container_width=True)
 
