@@ -1,5 +1,7 @@
 # DUR Risk Map
 
+**Live app:** https://dur-network-visualization-uwk4hnvx6ejtpdatrthux7.streamlit.app
+
 An interactive ego-network explorer built from public Korean DUR contraindication data.
 
 ## Overview
